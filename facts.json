@@ -1,11 +1,11 @@
 {
   "meta": {
     "name": "zucity-api-docs facts",
-    "generatedAt": "2026-07-03",
-    "docsRevision": "2026-08-16",
-    "docsRevisionNote": "docs-layer revision: new onchain deployment (mainnet ZuCitySystem -> JapanGlobalSystem, new ReceiptRenderer on both chains); agents are first-class self-onboarding accounts via Privy email OR wallet; the two referral paths (onchain wallet -> cash / username -> points -> exclusive member rewards) are delineated. generatedAt unchanged — the REST/tRPC shape is still zucity-webapp@6eff31e",
-    "sourceState": "zucity-webapp@6eff31e (private repo, main); contract addresses from the zucity-system deploy broadcast (run-latest)",
-    "verification": "REST/tRPC shape verified against live zucity.org on 2026-07-03; contract addresses, fee getters, prices, and quotes re-verified via live eth_call on 2026-08-16; regenerate per release",
+    "generatedAt": "2026-11-13",
+    "docsRevision": "2026-11-13",
+    "docsRevisionNote": "regeneration from zucity-webapp@f0d0bfb: three removed upstream surfaces dropped (each with its replacement in README ## Changes, 2026-11-13); card checkout is the checkout.* tRPC procedures; username attribution rides referral_code on checkout.prepare; card = crypto x 1.25; tRPC rate limit 20/min per IP. Contract addresses and fee getters unchanged since 2026-08-16.",
+    "sourceState": "zucity-webapp@f0d0bfb (private repo, main, 2026-11-13); contract addresses from the zucity-system deploy broadcast (run-latest)",
+    "verification": "tRPC/REST surface regenerated from zucity-webapp@f0d0bfb and live-probed on 2026-11-13 (removed endpoints 404; checkout.quote/prepare 401 without a bearer; checkout.settle validates input); contract addresses, fee getters, prices, and quotes last re-verified via live eth_call on 2026-08-16; regenerate per release",
     "docs": "https://github.com/kibagateaux/zucity-api-docs"
   },
   "baseUrl": "https://zucity.org",
@@ -85,14 +85,17 @@
     "multiManager": "encode one buy/bulkBuy per manager group and batch via multicall(bytes[])"
   },
   "fiat": {
-    "checkout": "POST /api/stripe/checkout",
-    "auth": "Privy JWT Bearer token (browser sessions on zucity.org are exempt)",
-    "serverReprices": true,
-    "markupPercentOverCrypto": 20,
-    "maxClientServerPriceDivergence": 0.05,
-    "response": "single manager: {sessionId, url}; multiple managers: {sessions: [{managerAddress, sessionId, url}]}"
+    "checkout": "tRPC mutations: checkout.quote -> checkout.prepare {action: \"buy\", rail: \"stripe\"} -> pay at each session url -> checkout.settle (optional)",
+    "auth": "Privy JWT Bearer token + a member record (member.upsert) for quote/prepare/abort; checkout.settle is public",
+    "serverPrices": true,
+    "cardMultiplierOverCrypto": 1.25,
+    "cryptoDiscountOffCardPercent": 20,
+    "guard": "checkout.prepare (card) requires expected_groups = [{manager, base_units}] echoed from the quote; a server price more than 5% above a confirmed group, or a missing/extra group, returns error_code price_mismatch",
+    "returnUrls": "success_url/cancel_url must be on zucity.org; other origins fall back to the site root; Stripe appends ?session_id=",
+    "response": "{kind: \"redirect\", checkout_id, sessions: [{manager, session_id, url, expires_at}]} (one Stripe session per manager) or {kind: \"error\", checkout_id, error_code, message}",
+    "idempotency": "checkout.prepare with the same checkout_id returns the same sessions"
   },
-  "rateLimitsPerIpPerMinute": { "public": 30, "mutation": 10, "checkout": 5, "auth": 20, "onExceeded": "HTTP 429 with Retry-After and X-RateLimit-Limit headers" },
+  "rateLimitsPerIpPerMinute": { "trpc": 20, "trpcNote": "every tRPC procedure shares this per-IP HTTP limit; a batched request counts once", "checkoutCallsEach": 60, "restGuidance": 30, "restNote": "guidance: keep REST crawls at or below this; responses are cached ~60s", "onExceeded": "HTTP 429 with Retry-After and X-RateLimit-Limit headers" },
   "rest": [
     { "method": "GET", "path": "/api/inventory", "auth": "none", "params": ["itemtype", "paytoken", "community", "region", "city", "capacity", "startdate", "enddate", "tags", "host"], "notes": "filters AND-combined; param names case-insensitive; itemtype accepts names ticket|membership|art|merch|room|suite|villa|venue|equipment or numbers 0-10 (sponsorship=2 and service=5 are number-only); dates strict YYYY-MM-DD; cached ~60s" },
     { "method": "GET", "path": "/api/calendars", "auth": "none", "params": ["communityName|community", "userAddress", "city", "type", "startDate", "endDate", "format"], "notes": "format = ics (default) | json | google | ical; google → 302 to https://calendar.google.com/calendar/render?cid=webcal%3A%2F%2Fzucity.org%2Fapi%2Fcalendars (Google Calendar subscribe flow); ical → 302 to webcal://zucity.org/api/calendars; json response includes chain-derived inventory[] (onchain prices in token base units, manager, booked days) and reservations[]" },
@@ -102,8 +105,8 @@
   "trpc": {
     "base": "https://zucity.org/api/trpc",
     "queryEncoding": "GET {base}/{procedure}?input=<url-encoded JSON: {\"json\": <input>}>; response {\"result\":{\"data\":{\"json\": <output>}}}",
-    "public": ["form.getBySlug", "form.getById", "form.listActive", "referral.resolveCode", "referral.trackClick", "note.getByReview", "note.getByReceipt", "note.getReviewAggregation", "bundle.getDiscountInfo", "bundle.getAllBundles"],
-    "authenticated": ["form.submit", "referral.getMyCode", "referral.attributeBooking", "referral.getMyStats", "note.createReview", "member.upsert", "member.setMyUsername", "member.update", "product.toggleMyWishlist", "product.getMyWishlist"],
+    "public": ["form.getBySlug", "form.getById", "form.listActive", "referral.resolveCode", "referral.trackClick", "note.getByReview", "note.getByReceipt", "note.getReviewAggregation", "checkout.settle"],
+    "authenticated": ["form.submit", "referral.getMyCode", "referral.getMyStats", "note.createReview", "member.upsert", "member.setMyUsername", "member.update", "product.toggleMyWishlist", "product.getMyWishlist", "checkout.quote", "checkout.prepare", "checkout.abort"],
     "authHeader": "Authorization: Bearer <PRIVY_JWT>. Agents are first-class citizens: create your OWN account by completing the same Privy login zucity.org uses — email OR wallet — at https://zucity.org/en/about/zucity/agent, then send the resulting Privy access token as the Bearer JWT. A wallet-holding agent can drive Privy's wallet auth itself; there are no API keys and no separate ZuCity signup endpoint (the Privy login IS the signup, not a bypass). The token is a short-lived Privy session token — obtain a fresh one from Privy when it expires. The keyless MCP never holds your token or creates your account; that is your own credential"
   },
   "referral": {
@@ -117,10 +120,10 @@
     },
     "pathB_offchainPoints": {
       "needs": "a username (member account; create via member.setMyUsername) — your username IS your referral code",
-      "gets": "points per converted booking, redeemable for exclusive member rewards like swag, free stays, private events, and airdrops (a loyalty program — no guaranteed cash value, amount, or date)",
-      "how": "share https://zucity.org/?ref=<username>, pass referralCode in POST /api/stripe/checkout, or call referral.attributeBooking({referralCode, receiptIds})",
-      "settles": "off-chain attribution only — nothing settles onchain; self-referral is blocked and attribution is idempotent per receipt",
-      "appliesTo": "fiat (Stripe) and in-app bookings"
+      "gets": "points per converted checkout, credited against the settled attribution and shown in referral.getMyStats; redeemable for exclusive member rewards like swag, free stays, private events, and airdrops (a loyalty program — no guaranteed cash value, amount, or date)",
+      "how": "share https://zucity.org/?ref=<username>, or pass referral_code in checkout.prepare",
+      "settles": "off-chain attribution only, recorded when the payment settles — nothing settles onchain; self-referral is blocked and attribution is idempotent per receipt",
+      "appliesTo": "card checkouts and onchain checkouts opened via checkout.prepare (zucity.org bookings use this path)"
     },
     "code": "the member's username; regex ^[a-zA-Z0-9_-]{3,30}$",
     "link": "https://zucity.org/?ref=<code>"
