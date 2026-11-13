@@ -10,7 +10,7 @@ Acting for a principal? Quote before you promise, surface fees before they commi
 
 - [SKILL.md](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/skills/zucity-booking/SKILL.md): agent operating manual (installable skill at `skills/zucity-booking/`) — capability boundaries, the 5 workflows (search, onchain buy, card checkout, applications, referrals), decision rules, guardrails
 - [integrations.md](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/integrations.md): out-of-app rails — subscribe to the events calendar (Google/webcal/ICS), publish your event via the ZuCity Luma calendar, chat surfaces at verified status, run your own agent/MCP server
-- [api.md](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/api.md): full HTTP reference — REST endpoints, tRPC-over-HTTP, auth model, rate limits, Stripe checkout contract, use cases (personal trip / group retreat / popup city), verified NOT-SUPPORTED list
+- [api.md](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/api.md): full HTTP reference — REST endpoints, tRPC-over-HTTP, auth model, rate limits, card checkout contract (`checkout.*` tRPC), use cases (personal trip / group retreat / popup city), verified NOT-SUPPORTED list
 - [contracts.md](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/contracts.md): smart contract integration — addresses (mainnet production + Sepolia sandbox), Receipt struct, date encoding, availability, quoting, purchase chronology, receipt lifecycle, referral fees, errors
 - [facts.json](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/facts.json): machine-readable ground truth — addresses, enums, limits, endpoints, verified live samples
 - [reputation.md](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/reputation.md): identity, reputation & standing — authority model, proof-of-stay receipts, soulbound vs transferable, memory tiers
@@ -25,7 +25,7 @@ Acting for a principal? Quote before you promise, surface fees before they commi
 
 ## Tools
 
-- [zucity-mcp.js](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/zucity-mcp.js): single-file MCP server — 12 tools (search, availability, quotes, ready-to-sign purchase calldata, receipts, forms, reviews, bundles, referral links). Never holds keys. `node zucity-mcp.js`
+- [zucity-mcp.js](https://raw.githubusercontent.com/kibagateaux/zucity-api-docs/main/zucity-mcp.js): single-file MCP server — 11 tools (search, availability, quotes, ready-to-sign purchase calldata, receipts, forms, reviews, referral links). Never holds keys. `node zucity-mcp.js`
 
 ## Optional
 

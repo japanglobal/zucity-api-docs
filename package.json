@@ -1,7 +1,7 @@
 {
   "name": "zucity-mcp",
-  "version": "0.2.0",
-  "description": "MCP server for ZuCity Japan bookings — search, availability, quotes, ready-to-sign purchase calldata, receipts, forms, reviews, bundles, referrals. Keyless by design.",
+  "version": "0.3.0",
+  "description": "MCP server for ZuCity Japan bookings — search, availability, quotes, ready-to-sign purchase calldata, receipts, forms, reviews, referrals — 11 tools. Keyless by design.",
   "license": "MIT",
   "type": "module",
   "bin": { "zucity-mcp": "./zucity-mcp.js" },
