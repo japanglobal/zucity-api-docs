@@ -4,8 +4,7 @@
  *
  * Tools: search_inventory, get_calendar, check_availability, quote_price,
  *        build_purchase_calldata, get_receipt_status, list_application_forms,
- *        booking_link, get_reviews, get_bundles, resolve_referral_code,
- *        get_facts.
+ *        booking_link, get_reviews, resolve_referral_code, get_facts.
  *
  * Security model: read + encode + link ONLY. This server never holds keys,
  * never signs, never sends transactions. build_purchase_calldata returns
@@ -18,7 +17,7 @@
  *   ZUCITY_REFERRER  optional 0x address used as default onchain referrer
  *
  * Docs: https://github.com/kibagateaux/zucity-api-docs (api.md, contracts.md, skills.md, facts.json)
- * Generated from zucity-webapp private repo state @ 6eff31e, 2026-07-03.
+ * Generated from zucity-webapp private repo state @ f0d0bfb, 2026-11-13.
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -33,7 +32,7 @@ import { mainnet, sepolia } from "viem/chains";
 // ---------------------------------------------------------------------------
 // Ground truth (mirrors facts.json; regenerate per release)
 // ---------------------------------------------------------------------------
-const GENERATED_FROM = "zucity-webapp@6eff31e (2026-07-03); addresses refreshed to the zucity-system JapanGlobalSystem deploy, live-verified 2026-08-16";
+const GENERATED_FROM = "zucity-webapp@f0d0bfb (2026-11-13); contract addresses from the JapanGlobalSystem deploy, live-verified 2026-08-16";
 
 const FACTS = {
   baseUrlDefault: "https://zucity.org",
@@ -74,8 +73,9 @@ const FACTS = {
     rule: "year = calendarYear - 2023; startDay = 1-indexed day of year; daysCount = inclusive calendar days",
   },
   sentinelPrice: 340282366920938463463374607431768211454n, // 2^128 - 2 → application-gated item
-  rateLimitsPerIpPerMinute: { public: 30, mutation: 10, checkout: 5, auth: 20 },
-  referral: { codeRegex: "^[a-zA-Z0-9_-]{3,30}$", link: "https://zucity.org/?ref=<code>", pointsPerBooking: 300 },
+  rateLimitsPerIpPerMinute: { trpc: 20, checkoutCallsEach: 60, restGuidance: 30 },
+  cardPricing: "card = crypto × 1.25 (crypto is 20% off card); the server prices every line — checkout.quote, then checkout.prepare (api.md § Card payments)",
+  referral: { codeRegex: "^[a-zA-Z0-9_-]{3,30}$", link: "https://zucity.org/?ref=<code>", checkoutField: "referral_code on checkout.prepare" },
   notSupported: [
     "GET /api/inventory/{id} (404) — fetch the list, select by id",
     "free-text search — use documented filters",
@@ -171,7 +171,7 @@ function fail(err) {
 
 async function jfetch(url) {
   const r = await fetch(url, { headers: { "user-agent": UA, accept: "application/json" } });
-  if (r.status === 429) throw new Error(`rate limited (429) — retry after ${r.headers.get("retry-after") ?? "60"}s (public limit 30/min)`);
+  if (r.status === 429) throw new Error(`rate limited (429) — retry after ${r.headers.get("retry-after") ?? "60"}s (tRPC limit 20/min per IP)`);
   if (!r.ok) throw new Error(`HTTP ${r.status} for ${url}`);
   return r.json();
 }
@@ -282,7 +282,7 @@ async function resolveAndQuote(items, buyerAddress, recipientAddress) {
 // ---------------------------------------------------------------------------
 // MCP server & tools
 // ---------------------------------------------------------------------------
-const server = new McpServer({ name: "zucity", version: "0.2.0" });
+const server = new McpServer({ name: "zucity", version: "0.3.0" });
 
 server.tool(
   "search_inventory",
@@ -373,7 +373,7 @@ const quoteItemsShape = z.array(z.object({
 
 server.tool(
   "quote_price",
-  "Authoritative price quote via the contract (getPriceAndDiscountRate) — includes bulk/length/community discounts. ALWAYS use this over inventory display prices. Fiat card price ≈ quote × 1.20.",
+  "Authoritative price quote via the contract (getPriceAndDiscountRate) — includes bulk/length/community discounts. ALWAYS use this over inventory display prices. Card price = quote × 1.25.",
   {
     items: quoteItemsShape,
     buyerAddress: z.string().describe("0x… wallet that will pay (discounts can depend on it)"),
@@ -387,7 +387,7 @@ server.tool(
         {
           groups: quoted.map(({ receipts, ...g }) => g),
           grandTotal: grand,
-          note: "price in token base units; totalFormatted per group is human-readable. Card checkout adds a 20% fiat markup.",
+          note: "price in token base units; totalFormatted per group is human-readable. Card checkout price = this × 1.25 (crypto is 20% off card).",
         },
         { type: "chain", detail: `${SYSTEM} getPriceAndDiscountRate @ chain ${CHAIN_ID}` },
       );
@@ -568,27 +568,6 @@ server.tool(
 );
 
 server.tool(
-  "get_bundles",
-  "Curated multi-item packs (bundle.getAllBundles), or one pack's discount pricing (bundle.getDiscountInfo). REST display data — quote_price the underlying items before any purchase.",
-  { packId: z.union([z.string(), z.number()]).optional().describe("pack id for discount info; omit to list all packs") },
-  async ({ packId }) => {
-    try {
-      if (packId === undefined) {
-        const raw = await trpc("bundle.getAllBundles");
-        const bundles = Object.entries(raw ?? {}).map(([id, b]) => ({ packId: id, ...b }));
-        return ok(
-          { count: bundles.length, bundles, note: "raw endpoint returns an object keyed by packId; normalized to an array here" },
-          { type: "rest", detail: `tRPC bundle.getAllBundles @ ${BASE}` },
-        );
-      }
-      const discount = await trpc("bundle.getDiscountInfo", { packId: String(packId) });
-      if (!discount) throw new Error(`no pack with id "${packId}"`);
-      return ok({ packId: String(packId), ...discount }, { type: "rest", detail: `tRPC bundle.getDiscountInfo @ ${BASE}` });
-    } catch (e) { return fail(e); }
-  },
-);
-
-server.tool(
   "resolve_referral_code",
   "REST lookup: resolve a referral code (username) via referral.resolveCode — returns {id, username, avatarUrl} or null when unknown. Validate a code before attaching it to links or checkouts.",
   { code: z.string().regex(/^[a-zA-Z0-9_-]{3,30}$/, "referral codes are usernames: 3-30 chars [a-zA-Z0-9_-]") },
@@ -639,11 +618,10 @@ async function selftest() {
     const f = await trpc("form.listActive", { locale: "en" });
     return `${f?.length ?? 0} forms`;
   });
-  await step("tRPC reviews + bundles", async () => {
+  await step("tRPC reviews", async () => {
     const agg = await trpc("note.getReviewAggregation", { reviewId: "18" });
     if (!agg || !Array.isArray(agg.distribution)) throw new Error(`unexpected aggregation shape: ${JSON.stringify(agg)}`);
-    const packs = await trpc("bundle.getAllBundles");
-    return `item 18: ${agg.totalReviews} reviews; ${Object.keys(packs ?? {}).length} bundle(s)`;
+    return `item 18: ${agg.totalReviews} reviews`;
   });
   for (const [name, status, info] of results) console.error(`${status.padEnd(4)} ${name}: ${info}`);
   const failed = results.some(([, s]) => s === "FAIL");

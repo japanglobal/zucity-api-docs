@@ -230,4 +230,4 @@ stateDiagram-v2
 - `confirm`, `fulfill`, `gift`, and item listing are manager/operator functions — documented here only so you can interpret receipt states.
 
 ---
-*Generated from zucity-webapp private repo state @ `6eff31e`, 2026-07-03; contract addresses, fee getters, prices, and the dual-referral model refreshed 2026-08-16 against the `zucity-system` deploy broadcast (`run-latest`) and live onchain reads. Docs and examples MIT-licensed; the ZuCity platform and contracts are proprietary.*
+*Contract reference re-checked against zucity-webapp private repo state @ `f0d0bfb`, 2026-11-13 (every function and event signature used here matches); contract addresses, fee getters, prices, and the dual-referral model last verified 2026-08-16 against the `zucity-system` deploy broadcast (`run-latest`) and live onchain reads. Docs and examples MIT-licensed; the ZuCity platform and contracts are proprietary.*

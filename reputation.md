@@ -9,7 +9,7 @@ today ([api.md](api.md) · [contracts.md](contracts.md) ·
 
 | Action | Who | Credential |
 |---|---|---|
-| Read anything (inventory, chain state, reviews, bundles, calendars) | anyone | none |
+| Read anything (inventory, chain state, reviews, calendars) | anyone | none |
 | Assemble transactions, quotes, checkout requests | any agent or program | none |
 | Execute an onchain purchase | the key-holder only | wallet signature |
 | Mutate offchain state (profile, reviews, applications, attribution) | a logged-in member (you, in your own right) | your own Privy JWT (email or wallet login) |
@@ -83,7 +83,7 @@ booking on someone's behalf.
 |---|---|---|
 | **Stable by design** | cache forever | itemType/receiptStatus enums; date encoding (`year = calendarYear − 2023`); Receipt struct order; the authority model |
 | **Per release** | re-verify when `facts.json .meta` changes | contract + token addresses; `cancelFeeBps`; rate limits; MCP tool list |
-| **Per session** | refresh each session (~60s server cache) | inventory metadata (names, tags, display prices); active forms; bundles |
+| **Per session** | refresh each session (~60s server cache) | inventory metadata (names, tags, display prices); active forms |
 | **Never cache** | fetch at decision time | `isAvailable(...)`; `getPriceAndDiscountRate(...)` quotes; receipt status |
 
 Release detection in ≤2 calls: fetch facts.json (or MCP `get_facts`),

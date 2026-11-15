@@ -1,13 +1,13 @@
 # ZuCity API — Full System Reference
 
-ZuCity ([zucity.org](https://zucity.org)) is a booking platform for a curated registry of coliving homes, rooms, venues, event tickets, memberships, and services across rural Japan (Komoro/Nagano hub, plus Hokkaido, Kyūshū, Tokyo partners). Bookings settle two ways: **onchain** (USDC on Ethereum mainnet, receipt = ERC-721 NFT) or **fiat** (Stripe checkout). Some listings are **application-gated** — you apply through a form instead of paying directly.
+ZuCity ([zucity.org](https://zucity.org)) is a booking platform for a curated registry of coliving homes, rooms, venues, event tickets, memberships, and services across rural Japan (Komoro/Nagano hub, plus Hokkaido, Kyūshū, Tokyo partners). Bookings settle two ways: **onchain** (USDC on Ethereum mainnet, receipt = ERC-721 NFT) or **card** (Stripe, opened through the `checkout.*` tRPC procedures). Some listings are **application-gated** — you apply through a form instead of paying directly.
 
 ## The two-layer model (read this first)
 
 | Layer | Surfaces | Trust |
 |---|---|---|
 | **Discovery** | `GET /api/inventory`, `llms.txt`, JSON-LD, `/api/luma`, public tRPC | Rich metadata (names, photos, cities, tags). Display `price`/`manager` **can drift from the chain** — never transact from these fields |
-| **Transaction** | Contract reads/writes ([contracts.md](contracts.md)), `POST /api/stripe/checkout` | Authoritative. The Stripe route re-prices server-side from the chain |
+| **Transaction** | Contract reads/writes ([contracts.md](contracts.md)), `checkout.*` tRPC ([Card payments](#card-payments-stripe)) | Authoritative. The card checkout prices every line server-side from the chain |
 
 Bridge: `GET /api/calendars?format=json` returns the **chain-derived registry** (onchain prices in token base units, real managers, booked days) over plain REST — chain truth without an RPC connection.
 
@@ -31,7 +31,7 @@ Agents are **first-class citizens** on ZuCity: you create and hold your **own** 
 | Level | How | Used by |
 |---|---|---|
 | None | — | all REST reads, public tRPC procedures, all contract reads |
-| Privy JWT | Complete the **same Privy login zucity.org uses — email OR wallet** — at [zucity.org/en/about/zucity/agent](https://zucity.org/en/about/zucity/agent), then send the resulting Privy access token as `Authorization: Bearer <PRIVY_JWT>`. A wallet-holding agent can drive Privy's wallet (signature) auth itself; an email agent uses the email OTP. The token is a short-lived Privy session token — fetch a fresh one from Privy when it expires. | `member.*`, `form.submit`, referral attribution, reviews, wishlist, Stripe checkout (programmatic) |
+| Privy JWT | Complete the **same Privy login zucity.org uses — email OR wallet** — at [zucity.org/en/about/zucity/agent](https://zucity.org/en/about/zucity/agent), then send the resulting Privy access token as `Authorization: Bearer <PRIVY_JWT>`. A wallet-holding agent can drive Privy's wallet (signature) auth itself; an email agent uses the email OTP. The token is a short-lived Privy session token — fetch a fresh one from Privy when it expires. | `member.*`, `form.submit`, your referral code + stats, reviews, wishlist, `checkout.quote` / `checkout.prepare` / `checkout.abort` |
 | Wallet signature | your own signer | onchain purchases ([contracts.md](contracts.md)) |
 
 There is **no separate ZuCity signup endpoint and no API key** — the Privy login **is** your account creation, not a bypass to route around. The keyless [MCP server](README.md) never creates your account or holds your token; that credential is yours.
@@ -47,7 +47,7 @@ Your **username** is your public handle **and** your points-referral code (see [
 3. **Claim your username.** `member.setMyUsername` with `{ username }` matching `^[a-zA-Z0-9_-]{3,30}$`. It throws `CONFLICT` ("Username taken") if another member already owns it — pick another. Your username is now your referral code.
 4. **Confirm.** `referral.getMyCode` returns your code; anyone can resolve it with the public `referral.resolveCode {code}`.
 
-Rate limits per IP per minute: **public reads 30 · authenticated mutations 10 · checkout 5 · auth 20**. Exceeding returns `429` with `Retry-After` and `X-RateLimit-Limit` headers. Space bulk crawls accordingly.
+Rate limits per IP per minute: **tRPC 20 HTTP requests** (every procedure, public or authenticated; a batched request counts once) · **`checkout.*` 60 calls each** on top of that. Exceeding returns `429` with `Retry-After` and `X-RateLimit-Limit` headers. REST reads (guidance): keep crawls at or below 30/min — responses are cached ~60s anyway.
 
 ## REST reference
 
@@ -168,18 +168,18 @@ curl 'https://zucity.org/api/trpc/form.listActive?input=%7B%22json%22%3A%7B%22lo
 | `referral.trackClick` (mutation, POST) | `{code}` | `{tracked}` |
 | `note.getReviewAggregation` | `{reviewId: "<itemId>"}` | `{averageRating, totalReviews, distribution[5]}` |
 | `note.getByReview` / `note.getByReceipt` | `{reviewId \| receiptId}` | public reviews/feedback |
-| `bundle.getAllBundles` | — | curated packs (e.g. id `8888` "ZuCity d/acc Week") with `items[{itemId, quantity}]` |
-| `bundle.getDiscountInfo` | `{packId}` | pack pricing |
+| `checkout.settle` (mutation, POST) | `{checkout_id?, proof}` | settles a paid checkout — see [Card payments](#card-payments-stripe) |
 
 ### Authenticated procedures (Privy JWT)
 
-Mutations are POSTs with the same superjson envelope in the body, plus `Authorization: Bearer <PRIVY_JWT>`. Limit: 10/min.
+Mutations are POSTs with the same superjson envelope in the body, plus `Authorization: Bearer <PRIVY_JWT>`. Limit: the shared tRPC 20/min per IP ([Authentication](#authentication)).
 
 | Procedure | Purpose |
 |---|---|
 | `form.submit` | submit an application — body below |
 | `member.upsert` / `member.update` / `member.setMyUsername` | profile + username (username doubles as your referral code) |
-| `referral.getMyCode` / `referral.attributeBooking` / `referral.getMyStats` | referral link, post-purchase attribution (points per booking), stats |
+| `referral.getMyCode` / `referral.getMyStats` | your referral code; your referral stats (attributions, conversions, points) |
+| `checkout.quote` / `checkout.prepare` / `checkout.abort` | price a cart, open a card (or app-tracked onchain) checkout, end an unpaid one — [Card payments](#card-payments-stripe) |
 | `note.createReview` | one review per member per item, rating 1–5 |
 | `product.toggleMyWishlist` / `product.getMyWishlist` | wishlist |
 
@@ -214,47 +214,56 @@ sequenceDiagram
 
 No-code path: every form is also a page — `https://zucity.org/en/apply/{formSlug}` (verified live: [`/en/apply/zucity-property-registry`](https://zucity.org/en/apply/zucity-property-registry)).
 
-## Fiat payments (Stripe)
+## Card payments (Stripe)
 
-`POST /api/stripe/checkout` — requires a Privy JWT for programmatic clients (zucity.org browser sessions are exempt). Limit: 5/min.
+Card checkout is a short sequence of tRPC **mutations** (POST, body `{"json": <input>}`). `checkout.quote`, `checkout.prepare` and `checkout.abort` need your Privy JWT **and** a member record (call `member.upsert` once first) — without a bearer they return `401 UNAUTHORIZED` (live-verified 2026-11-13). `checkout.settle` is public: Stripe or the chain is the authority on the money, not the caller.
+
+| Step | Procedure | Input (essentials) | Returns |
+|---|---|---|---|
+| 1 | `checkout.quote` | `{lines: [{item_id, quantity, people?, start_date?, end_date?}], rail?: "stripe"\|"onchain", buyer?}` | the server's price: one `groups[]` entry per manager (`manager`, `base_units`, `discount_bps`, `card: {value, currency, amount_minor} \| null`), plus `crypto` and `card` totals. `card: null` with a `card_error` means a seller cannot take cards — pay onchain instead |
+| 2 | `checkout.prepare` | `{action: "buy", rail: "stripe", lines, expected_groups: [{manager, base_units}], recipient?, referral_code?, success_url?, cancel_url?, checkout_id?}` | `{kind: "redirect", checkout_id, sessions: [{manager, session_id, url, expires_at}]}` — one Stripe session per manager — or `{kind: "error", error_code, message}` |
+| 3 | — | the user pays at each session `url` | Stripe redirects to `success_url` with `?session_id=…` appended |
+| 4 | `checkout.settle` (optional) | `{checkout_id?, proof: {rail: "stripe", session_id}}` | `{state, checkout_id, transaction_ids, items[]}` — the payment also settles on its own; call this to read the result now |
+| — | `checkout.abort` | `{checkout_id, reason: "dismissed"}` | ends an unpaid checkout; its open sessions expire |
 
 ```json
-{
-  "cartItems": [{
-    "itemId": "18", "name": "ZuCity Japan Deluxe Sticker Pack",
-    "quantity": 1, "priceUsd": 12.0, "tokenSymbol": "USDC",
-    "people": 1, "startDate": "2026-09-07", "endDate": "2026-09-07"
-  }],
-  "recipientAddress": "0x…",
-  "totalPriceUsd": 12.0,
-  "successUrl": "https://zucity.org/en/all",
-  "cancelUrl": "https://zucity.org/en/all",
-  "referralCode": "your-username"
-}
+{"json": {
+  "action": "buy", "rail": "stripe",
+  "lines": [{"item_id": "18", "quantity": 1, "start_date": "2026-12-07", "end_date": "2026-12-07"}],
+  "expected_groups": [{"manager": "0x…", "base_units": "10000000"}],
+  "recipient": "0x…",
+  "referral_code": "your-username",
+  "success_url": "https://zucity.org/en/all",
+  "cancel_url": "https://zucity.org/en/all"
+}}
 ```
 
-Behavioral contract — **do not compute fiat prices yourself**:
-1. The server re-prices every item from the chain and adds a **20% fiat markup** over the crypto price.
-2. If your `totalPriceUsd` diverges from the server's total by **more than 5%**, the request is rejected (400 with both prices) — quote onchain first, add 20%, or omit ambition and accept the server's number.
-3. Response: `{sessionId, url}` (one manager) or `{sessions: [{managerAddress, sessionId, url}]}` (cart spans managers — one Stripe session each). Send the user to `url` to pay.
-4. `referralCode` (the referrer's username) rides along for attribution. If the referrer is you, disclose it to the buyer (SKILL.md § Acting for a principal).
-5. After payment, ZuCity operations issues the onchain receipt to `recipientAddress` (gift) — fiat buyers get the same NFT receipt, minutes-to-hours later rather than instantly. Cancellation terms are the onchain ones: up to 30% fee, no free window.
+Behavioral contract — **do not compute card prices yourself** (derived from zucity-webapp@f0d0bfb; the auth gate and input validation are live-verified 2026-11-13, no live card payment was made):
+1. Inputs carry facts (ids, quantities, dates), never money. The server prices every line from the chain; **card = crypto × 1.25**, so crypto is exactly 20% off the card price.
+2. `expected_groups` is required on the card path: echo each quote group's `manager` + `base_units`. If the server's price for a group is more than 5% above what you confirmed, or a group is missing or extra, `prepare` returns `error_code: "price_mismatch"` — re-quote and show the buyer the new price.
+3. Return URLs must be on zucity.org; any other origin falls back to the site root.
+4. `prepare` again with the same `checkout_id` returns the same sessions — no second charge.
+5. `recipient` (default: your account's wallet) receives the NFT receipt. Card buyers get the same receipt as crypto buyers, issued asynchronously rather than in the payment transaction. Cancellation terms are the onchain ones: up to 30% fee, no free window.
+6. `referral_code` (a username) is recorded for attribution when the payment settles. If the code is yours, disclose it to the buyer (SKILL.md § Acting for a principal).
 
 ```mermaid
 sequenceDiagram
     participant A as Client (JWT)
-    participant S as /api/stripe/checkout
+    participant T as tRPC checkout.*
     participant P as Stripe
-    participant O as ZuCity ops
-    A->>S: cart + recipientAddress + referralCode
-    S->>S: re-price from chain (+20%), reject >5% divergence
-    S-->>A: checkout url(s)
-    A->>P: user pays
-    P--)O: webhook (internal)
-    O--)A: receipt NFT gifted to recipientAddress (async)
+    A->>T: quote {lines}
+    T-->>A: groups[] (server price, card = crypto × 1.25)
+    A->>T: prepare {action: buy, rail: stripe, lines, expected_groups, referral_code}
+    T-->>A: sessions[] (one url per manager)
+    A->>P: user pays at url
+    P-->>A: redirect to success_url?session_id=…
+    A->>T: settle {proof: {rail: stripe, session_id}} (optional)
+    T-->>A: state + paid items; receipt NFT follows (async)
 ```
 
-**Crypto vs fiat**: crypto = instant onchain receipt, no markup, instant referral split. Fiat = card UX, +20% markup, receipt issued asynchronously, referral attributed via code.
+**Onchain purchases with username attribution**: a direct `buy`/`bulkBuy` ([contracts.md](contracts.md)) needs no account. To also record a username referral on an onchain purchase, open it with `checkout.prepare {action: "buy", rail: "onchain", lines, referral_code}` (returns `{kind: "sign", checkout_id}`), send the transaction from a wallet linked to your account, then `checkout.settle {checkout_id, proof: {rail: "onchain", tx_hash}}`.
+
+**Crypto vs card**: crypto = instant onchain receipt, no markup, instant referral split. Card = card UX, crypto × 1.25, receipt issued asynchronously, referral attributed via `referral_code`.
 
 ## Referrals
 
@@ -264,11 +273,11 @@ ZuCity has **two distinct referral paths. Do not conflate them** — they use di
 |---|---|---|
 | **You need** | a **wallet** address (no account or username) | a **username** (member account; `member.setMyUsername`) |
 | **You get** | an instant **cash** fee split in the payment token (e.g. USDC) | **points** per converted booking → **exclusive member rewards** (swag, free stays, private events, airdrops) |
-| **How** | pass your wallet as the `referrer` arg of `buy`/`bulkBuy` | share `https://zucity.org/?ref=<username>`, pass `referralCode` in `/api/stripe/checkout`, or call `referral.attributeBooking({referralCode, receiptIds})` |
-| **When** | instantly, in the same purchase transaction | points credited at booking-conversion; rewards redeemed as the program runs |
+| **How** | pass your wallet as the `referrer` arg of `buy`/`bulkBuy` | share `https://zucity.org/?ref=<username>`, or pass `referral_code` in `checkout.prepare` ([Card payments](#card-payments-stripe)) |
+| **When** | instantly, in the same purchase transaction | attribution recorded when the payment settles; points are credited against that attribution afterwards and show in `referral.getMyStats`; rewards redeemed as the program runs |
 | **Settles** | **onchain**, in the receipt's `referrerFee` field | **off-chain** attribution only — nothing settles onchain |
-| **Applies to** | onchain (crypto/USDC) purchases | fiat (Stripe) + in-app bookings |
-| **Rate** | mainnet `referrerFeeBps()` = 10%; Sepolia `referrerFeeBPS()` = 10% — read the getter (manager-mutable), verified 2026-08-16 | points per booking; self-referral blocked; idempotent per receipt |
+| **Applies to** | onchain (crypto/USDC) purchases | card checkouts + onchain checkouts opened via `checkout.prepare` (zucity.org bookings use this path) |
+| **Rate** | mainnet `referrerFeeBps()` = 10%; Sepolia `referrerFeeBPS()` = 10% — read the getter (manager-mutable), verified 2026-08-16 | points per converted checkout; self-referral blocked; idempotent per receipt |
 
 **Guardrail:** passing your wallet as `referrer` earns **cash and no points**; sharing `?ref=<username>` earns **points and no cash**; the two are **not** documented to stack on one booking. The cash rail rides the onchain purchase (keyed to a **wallet**); the points rail rides off-chain attribution (keyed to a **username**).
 
@@ -278,13 +287,13 @@ Points earn **exclusive member rewards** — swag, free stays, private events, a
 - **Disclosure is part of the integration**: when the referrer/code is you (the agent arranging the booking), say so to the person you act for — the fee/attribution rides the booking, it is **not** added on top of their price (SKILL.md § Acting for a principal).
 
 > *Cash:* "I, an AI agent holding a wallet, needed to earn revenue for a booking I assembled — now I pass my wallet as `referrer` and receive a cash split instantly, in the same transaction the buyer pays."
-> *Points:* "I, an AI agent with a ZuCity username, needed durable credit for the fiat/app bookings I send — now I share `zucity.org/?ref=<username>` and bank points per converted booking toward exclusive member rewards (swag, free stays, private events, airdrops)."
+> *Points:* "I, an AI agent with a ZuCity username, needed durable credit for the card/app bookings I send — now I share `zucity.org/?ref=<username>` and bank points per converted booking toward exclusive member rewards (swag, free stays, private events, airdrops)."
 
 ```mermaid
 flowchart LR
     W["Wallet (no account)"] -->|"buy(receipt, referrerAddr)"| O["CASH: instant fee split to referrer wallet (onchain)"]
     N["Username (member account)"] -->|"share /?ref=username"| U[Buyer]
-    U -->|"fiat checkout / attributeBooking"| F["POINTS: points → member rewards (off-chain)"]
+    U -->|"checkout with referral_code"| F["POINTS: points → member rewards (off-chain)"]
 ```
 
 ## Use cases
@@ -311,4 +320,4 @@ flowchart TD
 - JPY-priced items cannot be bought onchain (fiat path only).
 
 ---
-*Generated from zucity-webapp private repo state @ `6eff31e`, 2026-07-03; contract addresses, fee getters, agent-account framing, and the dual-referral model refreshed 2026-08-16 (verified against live zucity.org + onchain reads). Docs and examples MIT-licensed; the ZuCity platform is proprietary.*
+*Regenerated from zucity-webapp private repo state @ `f0d0bfb`, 2026-11-13 (tRPC + REST surface; removed endpoints and the checkout auth gate live-verified that day); contract addresses and fee getters last verified onchain 2026-08-16. Docs and examples MIT-licensed; the ZuCity platform is proprietary.*

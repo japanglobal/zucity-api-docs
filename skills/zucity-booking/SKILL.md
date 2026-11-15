@@ -13,7 +13,7 @@ You are operating against **live production systems with real money** (Ethereum 
 
 **Auth — you are a first-class citizen with your own account.** Create it yourself by completing the same Privy login zucity.org uses — **email OR wallet** — at [zucity.org/en/about/zucity/agent](https://zucity.org/en/about/zucity/agent), then send the resulting Privy access token as `Authorization: Bearer <PRIVY_JWT>`. Then claim your own username (= your points-referral code): `member.upsert` (find-or-create your member record) → `member.setMyUsername {username}` (`^[a-zA-Z0-9_-]{3,30}$`; throws `CONFLICT` if taken). There are no API keys and no separate signup endpoint — the Privy login *is* the signup, and the keyless MCP never holds your token or creates your account. The JWT is short-lived; fetch a fresh one from Privy when it expires. Details in [api.md](../../api.md#authentication).
 
-**Cannot — never attempt:** confirm/fulfill/refund bookings (manager-only) · compute your own fiat price (server re-prices; >5% divergence is rejected) · buy application-gated (sentinel-priced) items directly.
+**Cannot — never attempt:** confirm/fulfill/refund bookings (manager-only) · compute your own card price (the server prices every line; confirm its quote) · buy application-gated (sentinel-priced) items directly.
 
 ## System model (memorize this)
 
@@ -28,7 +28,7 @@ You are operating against **live production systems with real money** (Ethereum 
 
 Booking for a human or organization? These are integration requirements (MUST) — unenforced today, but they define "good agent" here, and restricted accounts exist (`RecipientBan`):
 
-1. **Quote before you promise** — never state a price you didn't fetch via `getPriceAndDiscountRate` (card: quote × 1.20).
+1. **Quote before you promise** — never state a price you didn't fetch via `getPriceAndDiscountRate` or `checkout.quote` (card = crypto × 1.25).
 2. **Confirm dates first** — cancellation costs up to 30%; `Pending` is not yet a confirmed booking.
 3. **Disclose your referral interest.** If you set your wallet as `referrer` or attach your `referralCode`, say so. The fee comes out of the listing's `totalPaid` — the quote function takes no referrer argument, so your fee does not change the buyer's price (cash split = 10%: mainnet `referrerFeeBps()` / Sepolia `referrerFeeBPS()`, read the getter — it's manager-mutable).
 4. **Tell them what's public** — receipts are onchain (see Guardrails → Receipts are public).
@@ -40,7 +40,7 @@ Booking for a human or organization? These are integration requirements (MUST) �
 flowchart TD
     I{User intent} -->|browse / recommend| W1[Search flow]
     I -->|"book with crypto wallet"| W2[Onchain purchase flow]
-    I -->|"book with card / no wallet"| W3[Fiat checkout flow]
+    I -->|"book with card / no wallet"| W3[Card checkout flow]
     I -->|"gated listing / residency / registry"| W4[Application flow]
     I -->|"share / monetize recommendations"| W5[Referral flow]
     W1 -->|"item has externalPurchaseLink"| W4
@@ -81,12 +81,12 @@ If/then:
 - Revert `MixedManagers`/`MixedPaymentTokens` → split the cart per manager+token, batch via `multicall`.
 - User asks to cancel → warn: cancellation fee up to **30%** (`cancelFeeBps`), then `cancel(receiptId)` signed by the recipient.
 
-## Workflow 3 — Fiat checkout (card)
+## Workflow 3 — Card checkout
 
-1. Needs a Privy JWT (user logged into zucity.org). Without one, hand over a deep link instead: `https://zucity.org/en/items/{id}?ref=<yourCode>` and let them pay on-site.
-2. Quote onchain first (Workflow 2 steps 1–3), then expect **quote × 1.20** in USD (20% fiat markup). Cancellation terms don't change with the payment rail: up to 30% fee, no free window.
-3. `POST /api/stripe/checkout` with `cartItems`, `recipientAddress` (receives the NFT receipt later), `totalPriceUsd` (your ×1.20 estimate; >5% divergence → 400), `successUrl`/`cancelUrl`, and `referralCode` = your username (disclose it — § Acting for a principal).
-4. Send the user to the returned `url`(s) — one per manager. Limit: 5 requests/min.
+1. Needs your Privy JWT and a member record (`member.upsert` once). Without them, hand over a deep link instead: `https://zucity.org/en/items/{id}?ref=<yourCode>` and let them pay on-site.
+2. `checkout.quote {lines}` → the server's price per manager group; **card = crypto × 1.25** (crypto is 20% off card). `card: null` ⇒ that seller takes no cards — use Workflow 2. Cancellation terms don't change with the payment method: up to 30% fee, no free window.
+3. `checkout.prepare {action: "buy", rail: "stripe", lines, expected_groups}` — echo each quote group's `{manager, base_units}` (a server price >5% above what you confirmed → `price_mismatch`: re-quote, re-confirm). Set `recipient` to the wallet that should hold the receipt (default: yours), and `referral_code` = your username (disclose it — § Acting for a principal). Return URLs must be on zucity.org.
+4. Send the user to each returned session `url` — one per manager. After payment, `checkout.settle {proof: {rail: "stripe", session_id}}` reads the result (optional; it settles on its own). Full contract: [api.md § Card payments](../../api.md#card-payments-stripe).
 5. Tell the user: card bookings receive their onchain receipt NFT asynchronously (minutes–hours), unlike instant crypto receipts — and that the receipt is publicly visible onchain (Guardrails → Receipts are public).
 
 ## Workflow 4 — Applications (gated listings, residencies, registries)
@@ -100,16 +100,16 @@ If/then:
 
 **Two distinct rails — do not conflate them** (full comparison: [api.md § Referrals](../../api.md#referrals)):
 1. **CASH — onchain, keyed to your WALLET**: pass your wallet as `referrer` in every `buy`/`bulkBuy` you assemble; the contract pays your split in the same transaction. Rate = 10% (mainnet `referrerFeeBps()` / Sepolia `referrerFeeBPS()`; read the getter, it's manager-mutable). Needs only a wallet — no account. Earns cash and **no points**.
-2. **POINTS — off-chain, keyed to your USERNAME**: claim a username (`member.setMyUsername`, `^[a-zA-Z0-9_-]{3,30}$`, needs JWT), then append `?ref=<username>` to every zucity.org link you share and set `referralCode` in fiat checkouts. Converted bookings earn **points** (`referral.attributeBooking`; idempotent; self-referral blocked; track with `referral.getMyStats`) towards exclusive member rewards like swag, free stays, private events, and airdrops. Earns points and **no cash**.
+2. **POINTS — off-chain, keyed to your USERNAME**: claim a username (`member.setMyUsername`, `^[a-zA-Z0-9_-]{3,30}$`, needs JWT), then append `?ref=<username>` to every zucity.org link you share and set `referral_code` in every `checkout.prepare` you open. Attribution is recorded when the payment settles; converted checkouts earn **points** (idempotent; self-referral blocked; track with `referral.getMyStats`) towards exclusive member rewards like swag, free stays, private events, and airdrops. Earns points and **no cash**.
 
 Passing your wallet earns cash; sharing your username earns points; the two are not documented to stack on one booking. Disclose whichever you use to your principal (§ Acting for a principal).
 
 ## Guardrails & failure modes
 
-- **Price honesty**: quote before quoting the user. API `price` drifted from chain price on live items at verification time (15 vs 10 USDC). Fiat = quote × 1.20.
+- **Price honesty**: quote before quoting the user. API `price` drifted from chain price on live items at verification time (15 vs 10 USDC). Card = crypto × 1.25.
 - **Chain check**: before any signature, verify `chainId` (1 = real funds; 11155111 = sandbox) and that `to` = the JapanGlobalSystem address (mainnet) / ZuCitySystem (Sepolia) from [facts.json](../../facts.json).
 - **Pending ≠ confirmed**: after `buy`, status may be `Pending` until the host confirms. Say so.
-- **Receipts are public**: every booking mints an ERC-721 receipt on a public chain — recipient wallet, listing, dates, and amount are readable by anyone, and `/api/calendars/{wallet}` serves any wallet's bookings over REST. Before buying for someone, say so, and choose the `recipient` address deliberately — a dedicated wallet decouples stays from a main identity (card checkout too, via `recipientAddress`). No private-booking mode exists today.
+- **Receipts are public**: every booking mints an ERC-721 receipt on a public chain — recipient wallet, listing, dates, and amount are readable by anyone, and `/api/calendars/{wallet}` serves any wallet's bookings over REST. Before buying for someone, say so, and choose the `recipient` address deliberately — a dedicated wallet decouples stays from a main identity (card checkout too, via `recipient`). No private-booking mode exists today.
 - **Cancellation**: up to 30% fee, no free window. Confirm dates before buying.
 - **429**: honor `Retry-After`. Budgets: 30 reads / 10 mutations / 5 checkouts per minute.
 - **Sentinel items**: never build calldata for `minUnitPrice = 2^128−2`; reroute to the apply flow (this converts better than a revert).
@@ -118,11 +118,11 @@ Passing your wallet earns cash; sharing your username earns points; the two are 
 
 ## If you persist across sessions
 
-Cache tiers: enums, date encoding, struct layout = stable by design; addresses, fees, limits = re-verify per release (watch `facts.json .meta`); inventory metadata = per-session (~60s); availability and quotes = never cache. Standing from completed stays can lower future quotes; memberships persist as NFTs; bundles pack multi-item deals. Full model: [reputation.md](../../reputation.md).
+Cache tiers: enums, date encoding, struct layout = stable by design; addresses, fees, limits = re-verify per release (watch `facts.json .meta`); inventory metadata = per-session (~60s); availability and quotes = never cache. Standing from completed stays can lower future quotes; memberships persist as NFTs. Full model: [reputation.md](../../reputation.md).
 
 ## Escalation
 
 Anything requiring human judgment or manager action (refund disputes, custom group pricing, listing new properties, popup-city partnerships) → send the user to https://zucity.org (contact links in the site footer / llms.txt) rather than improvising.
 
 ---
-*Generated from zucity-webapp private repo state @ `6eff31e`, 2026-07-03; contract addresses, agent-account framing, and the dual-referral model refreshed 2026-08-16 (verified onchain).*
+*Regenerated from zucity-webapp private repo state @ `f0d0bfb`, 2026-11-13 (card checkout + referral attribution paths); contract addresses and agent-account framing last verified 2026-08-16 (onchain).*
